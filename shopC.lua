@@ -122,6 +122,40 @@ addEventHandler("changeFuelRequestState", root, function(state, callbackMessage)
 	end
 end)
 
+-- Kliens: szerver-válaszok kezelése a shop UI részére
+addEvent("createFuelOrderResult", true)
+addEventHandler("createFuelOrderResult", root, function(success, payload)
+	if success then
+		serverResponseState = "Successful"
+	else
+		serverResponseState = "Failed"
+	end
+	if payload and type(payload) == "string" then
+		showInfoBox("Szerver: "..tostring(payload), success and "success" or "error")
+	end
+end)
+
+addEvent("orderFinishedClient", true)
+addEventHandler("orderFinishedClient", root, function(resultOrOrderID)
+	if resultOrOrderID == false then
+		serverResponseState = "Failed"
+		showInfoBox("A rendelés lezárása sikertelen.", "error")
+	else
+		serverResponseState = "Successful"
+		showInfoBox("A rendelés lezárva: "..tostring(resultOrOrderID), "success")
+	end
+end)
+
+addEvent("showFuelCapacityPurchaseResult", true)
+addEventHandler("showFuelCapacityPurchaseResult", root, function(success, addAmount)
+	if success then
+		serverResponseState = "Successful"
+		showInfoBox("Kapacitás bővítve: +"..tostring(addAmount), "success")
+	else
+		serverResponseState = "Failed"
+		showInfoBox("Kapacitás bővítése sikertelen.", "error")
+	end
+end)
 
 function activeServerRequest(callBackFunction)
 	if (serverResponseTimer and serverResponseTimer.valid) then

@@ -161,14 +161,25 @@ local shoppingCartData = {
 -- triggerServerEvent("requestFuelBussinessComputerData", localPlayer, localPlayer, managementData.shopID)
 --triggerServerEvent("addFuelOrderProductToStorage", localPlayer, localPlayer, 63, 4)
 
+-- receiveFuelComputerData handler (safe: handle nil)
 addEvent("receiveFuelComputerData", true)
 addEventHandler("receiveFuelComputerData", root, function(data)
+	if not data then
+		if managementData and managementData.showComputer then
+			showInfoBox("A benzinkút adatai jelenleg nem elérhetők.", "error")
+			closeComputer()
+		else
+			outputDebugString("[ex_fuel_bussiness] receiveFuelComputerData: nil data received from server", 2)
+		end
+		return
+	end
+
 	computerData = data
 
 	if (#shoppingCartData > 0) then
-		Gui:showInfoBox("A rendszer frissítette a benzinkút adatait, így a kosárban lévő termékek törlésre kerültek!", "info", nil, nil, true);
+		Gui:showInfoBox("A rendszer frissítette a benzinkút adatait, így a kosárban lévő termékek törlésre kerültek!", "info", nil, nil, true)
 	end
-	shoppingCartData = {};
+	shoppingCartData = {}
 	if (managementData.showComputer) then return end
 
 	managementData.showComputer = true
@@ -187,6 +198,51 @@ end)
 addEvent("refreshFuelMarketClient", true)
 addEventHandler("refreshFuelMarketClient", root, function(data)
 	computerData.generatedMarketSupply = data
+end)
+
+-- Server response handlers for orders/capacity/etc.
+addEvent("createFuelOrderResult", true)
+addEventHandler("createFuelOrderResult", root, function(success, payload)
+	if success then
+		serverResponseState = "Successful"
+		if payload and type(payload) == "string" then
+			showInfoBox("Rendelés sikeresen létrehozva: "..payload, "success")
+		else
+			showInfoBox("Rendelés sikeresen létrehozva.", "success")
+		end
+	else
+		serverResponseState = "Failed"
+		showInfoBox("Rendelés sikertelen: "..tostring(payload or "Ismeretlen hiba"), "error")
+	end
+end)
+
+addEvent("orderFinishedClient", true)
+addEventHandler("orderFinishedClient", root, function(resultOrOrderID)
+	if resultOrOrderID == false then
+		serverResponseState = "Failed"
+		showInfoBox("A rendelés lezárása sikertelen.", "error")
+	else
+		serverResponseState = "Successful"
+		showInfoBox("A rendelés sikeresen lezárva: "..tostring(resultOrOrderID), "success")
+	end
+end)
+
+addEvent("showFuelCapacityPurchaseResult", true)
+addEventHandler("showFuelCapacityPurchaseResult", root, function(success, addAmount)
+	if success then
+		serverResponseState = "Successful"
+		showInfoBox("Kapacitás bővítve: +"..tostring(addAmount), "success")
+	else
+		serverResponseState = "Failed"
+		showInfoBox("Kapacitás bővítése sikertelen.", "error")
+	end
+end)
+
+-- legacy/general state event
+addEvent("changeFuelRequestState", true)
+addEventHandler("changeFuelRequestState", root, function(state, callbackMessage)
+	serverResponseState = tostring(state or "")
+	if callbackMessage then showInfoBox(tostring(callbackMessage), "info") end
 end)
 
 function closeComputer()

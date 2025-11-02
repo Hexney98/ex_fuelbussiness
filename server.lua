@@ -246,20 +246,82 @@ local function isOwner(player, shop)
 end
 
 local function isAdmin(player)
-    -- naive admin check: you can replace with your ACL/roles
+    -- try common admin exports first (safer when servers use custom admin resources)
+    if exports and exports.Admin and type(exports.Admin.IsHeadAdmin) == "function" then
+        return exports.Admin:IsHeadAdmin(player)
+    end
+    if exports and exports.admin and type(exports.admin.IsPlayerAdmin) == "function" then
+        return exports.admin:IsPlayerAdmin(player)
+    end
+    -- fallback to ACL group check
     local acc = getPlayerAccount(player)
     if not acc then return false end
     return isObjectInACLGroup("user." .. getAccountName(acc), aclGetGroup("Admin"))
 end
 
--- ========== EVENTS ==========
+-- ========== VALIDATORS ==========
+local function isArray(t)
+    if type(t) ~= "table" then return false end
+    local i = 0
+    for k,_ in pairs(t) do
+        i = i + 1
+        if t[i] == nil then return false end
+    end
+    return true
+end
+
+local function validateProductData(tbl)
+    if type(tbl) ~= "table" then return false end
+    for _, prod in ipairs(tbl) do
+        if type(prod.itemID) ~= "string" then return false end
+        if type(prod.itemName) ~= "string" and type(prod.itemName) ~= "nil" then return false end
+        if type(prod.price) ~= "number" or prod.price < 0 then return false end
+        if type(prod.availableStock) ~= "number" or prod.availableStock < 0 then return false end
+    end
+    return true
+end
+
+local function validatePermissionData(tbl)
+    return type(tbl) == "table"
+end
+
+local function validateStoragePositionData(tbl)
+    return type(tbl) == "table"
+end
+
+local function validateOffersData(tbl)
+    return type(tbl) == "table"
+end
+
+local function validateShopName(name)
+    return type(name) == "string" and #name > 0 and #name <= 45
+end
+
+local function validateOrderData(orderData)
+    if type(orderData) ~= "table" then return false end
+    if type(orderData.totalPrice) ~= "number" or orderData.totalPrice < 0 then return false end
+    if type(orderData.items) ~= "table" then return false end
+    for _, it in ipairs(orderData.items) do
+        if type(it.itemID) ~= "string" then return false end
+        if type(it.amount) ~= "number" or it.amount <= 0 then return false end
+        if type(it.price) ~= "number" or it.price < 0 then return false end
+    end
+    return true
+end
+
+-- ========== EVENTS ========== 
 
 -- Request shop data (computer open)
 addEvent("requestFuelBussinessComputerData", true)
 addEventHandler("requestFuelBussinessComputerData", resourceRoot, function(requestingPlayer, shopID)
     local src = client or source
     if not isElement(src) then return end
-    local shop = getShop(shopID, true) -- create if missing
+    -- do NOT auto-create shops on client request; only return existing data
+    local shop = getShop(shopID, false)
+    if not shop then
+        triggerClientEvent(src, "receiveFuelComputerData", resourceRoot, nil)
+        return
+    end
     -- send deep copy to client to avoid tampering
     local copy = decodeJSON(encodeJSON(shop))
     triggerClientEvent(src, "receiveFuelComputerData", resourceRoot, copy)
@@ -291,11 +353,23 @@ addEventHandler("requestFuelBussinessPurchase", resourceRoot, function(requestin
         triggerClientEvent(src, "fuelSys:clientExitShop", resourceRoot, false, "Nincs elég pénz.")
         return
     end
-    -- set owner and persist
+    -- set owner and persist; if DB save fails, rollback and refund
     shop.bussinessOwner = cid
-    saveShopToDB(shopID)
+    local ok = saveShopToDB(shopID)
+    if not ok then
+        -- rollback
+        shop.bussinessOwner = 0
+        if useBank then
+            givePlayerBank(src, price)
+        else
+            givePlayerCash(src, price)
+        end
+        triggerClientEvent(src, "fuelSys:clientExitShop", resourceRoot, false, "Szerverhiba: nem sikerült menteni a tranzakciót. Visszatérítettük a pénzt.")
+        outputDebugString("[ex_fuel_bussiness] Failed to persist shop purchase for shop "..tostring(shopID), 1)
+        return
+    end
     triggerClientEvent(src, "fuelSys:clientExitShop", resourceRoot, true, "Sikeres vásárlás.")
-    outputDebugString("[ex_fuel_bussiness] Player charID "..tostring(cid).." bought shop "..tostring(shopID))
+    outputDebugString("[ex_fuel_bussiness] Player charID "..tostring(cid) .." bought shop "..tostring(shopID))
 end)
 
 -- Update shop data (productData, permissionData, offersData, shopName, storagePositionData)
@@ -316,25 +390,61 @@ addEventHandler("updateFuelBussinessData", resourceRoot, function(requestingPlay
         return
     end
 
-    if dataType == "productData" then
-        shop.productData = payload or {}
-    elseif dataType == "permissionData" then
-        shop.permissionData = payload or {}
-    elseif dataType == "storagePositionData" then
-        shop.storagePositionData = payload or {}
-    elseif dataType == "offersData" then
-        shop.offersData = payload or {}
-    elseif dataType == "shopName" then
-        shop.bussinessName = tostring(payload or shop.bussinessName)
-    else
-        -- generic fallback
-        shop[dataType] = payload
+    local allowedTypes = {
+        productData = true,
+        permissionData = true,
+        storagePositionData = true,
+        offersData = true,
+        shopName = true,
+        storageCapacity = true,
+        maxStorageItems = true,
+    }
+
+    if not allowedTypes[dataType] then
+        outputDebugString("[ex_fuel_bussiness] updateFuelBussinessData: forbidden dataType "..tostring(dataType), 2)
+        return
     end
 
-    saveShopToDB(shopID)
+    -- validate based on type
+    if dataType == "productData" then
+        if not validateProductData(payload) then
+            outputDebugString("[ex_fuel_bussiness] Invalid productData payload from "..tostring(getPlayerName(src)), 2)
+            return
+        end
+        shop.productData = payload or {}
+    elseif dataType == "permissionData" then
+        if not validatePermissionData(payload) then return end
+        shop.permissionData = payload or {}
+    elseif dataType == "storagePositionData" then
+        if not validateStoragePositionData(payload) then return end
+        shop.storagePositionData = payload or {}
+    elseif dataType == "offersData" then
+        if not validateOffersData(payload) then return end
+        shop.offersData = payload or {}
+    elseif dataType == "shopName" then
+        if not validateShopName(payload) then return end
+        shop.bussinessName = tostring(payload or shop.bussinessName)
+    elseif dataType == "storageCapacity" then
+        local v = tonumber(payload)
+        if not v or v < 0 then return end
+        shop.storageCapacity = v
+    elseif dataType == "maxStorageItems" then
+        local v = tonumber(payload)
+        if not v or v < 0 then return end
+        shop.maxStorageItems = v
+    end
+
+    local ok = saveShopToDB(shopID)
+    if not ok then
+        outputDebugString("[ex_fuel_bussiness] Failed to save shop after update "..tostring(shopID), 1)
+        -- optionally notify client
+        triggerClientEvent(src, "receiveFuelComputerData", resourceRoot, nil)
+        return
+    end
+
     -- send updated data back to the requester
     triggerClientEvent(src, "receiveFuelComputerData", resourceRoot, decodeJSON(encodeJSON(shop)))
-    outputDebugString("[ex_fuel_bussiness] shop "..tostring(shopID).." updated by "..tostring(cid))
+    outputDebugString("[ex_fuel_bussiness] shop "..tostring(shopID) .." updated by "..tostring(cid))
 end)
 
 -- Refresh offers from client
@@ -348,6 +458,7 @@ addEventHandler("refreshFuelOffersServer", resourceRoot, function(requestingPlay
     if not cid then return end
     local allowed = (shop.bussinessOwner == cid) or isAdmin(src)
     if not allowed then return end
+    if not validateOffersData(newOffers) then return end
     shop.offersData = newOffers or {}
     saveShopToDB(shopID)
     triggerClientEvent(src, "refreshFuelOffersClient", resourceRoot, shop.offersData)
@@ -381,7 +492,14 @@ addEventHandler("checkFuelCapacityPurchaseServer", resourceRoot, function(reques
         return
     end
     shop.storageCapacity = (shop.storageCapacity or 0) + addAmount
-    saveShopToDB(shopID)
+    local ok = saveShopToDB(shopID)
+    if not ok then
+        -- rollback
+        shop.storageCapacity = (shop.storageCapacity or 0) - addAmount
+        if useBank then givePlayerBank(src, price) else givePlayerCash(src, price) end
+        triggerClientEvent(src, "showFuelCapacityPurchaseResult", resourceRoot, false, 0)
+        return
+    end
     triggerClientEvent(src, "receiveFuelComputerData", resourceRoot, decodeJSON(encodeJSON(shop)))
     triggerClientEvent(src, "showFuelCapacityPurchaseResult", resourceRoot, true, addAmount)
 end)
@@ -399,6 +517,7 @@ addEventHandler("addFuelOrderProductToStorage", resourceRoot, function(requestin
     if not allowed then return end
 
     amount = tonumber(amount) or 0
+    if amount <= 0 then return end
     -- find product
     local found = false
     for _, prod in ipairs(shop.productData) do
@@ -411,7 +530,11 @@ addEventHandler("addFuelOrderProductToStorage", resourceRoot, function(requestin
     if not found then
         table.insert(shop.productData, { itemID = itemID, itemName = itemID, price = 0, availableStock = amount })
     end
-    saveShopToDB(shopID)
+    local ok = saveShopToDB(shopID)
+    if not ok then
+        outputDebugString("[ex_fuel_bussiness] Failed to save shop after adding stock "..tostring(shopID), 1)
+        return
+    end
     triggerClientEvent(src, "receiveFuelComputerData", resourceRoot, decodeJSON(encodeJSON(shop)))
 end)
 
@@ -455,8 +578,14 @@ addEventHandler("checkFinishFuelOrderServer", resourceRoot, function(requestingP
         end
     end
 
-    -- optionally handle money transactions: if order was prepaid, it's handled earlier at order creation
-    saveShopToDB(shopID)
+    local ok = saveShopToDB(shopID)
+    if not ok then
+        -- rollback: reinsert order and revert product changes is complex; notify and reinsert order
+        table.insert(shop.orderList, orderIndex, order)
+        triggerClientEvent(src, "orderFinishedClient", resourceRoot, false)
+        outputDebugString("[ex_fuel_bussiness] Failed to persist finished order for shop "..tostring(shopID), 1)
+        return
+    end
     triggerClientEvent(src, "receiveFuelComputerData", resourceRoot, decodeJSON(encodeJSON(shop)))
     triggerClientEvent(src, "orderFinishedClient", resourceRoot, orderID)
 end)
@@ -468,7 +597,11 @@ addEventHandler("createFuelOrderServer", resourceRoot, function(requestingPlayer
     if not isElement(src) then return end
     local shop = getShop(shopID, false)
     if not shop then return end
-    -- orderData = { items = { {itemID, itemName, amount, price}, ... }, totalPrice = n, customerCharID = n }
+    -- validate order structure
+    if not validateOrderData(orderData) then
+        triggerClientEvent(src, "createFuelOrderResult", resourceRoot, false, "Érvénytelen rendelés adatok.")
+        return
+    end
     local total = tonumber(orderData.totalPrice) or 0
     local charged = false
     if total > 0 then
@@ -482,8 +615,16 @@ addEventHandler("createFuelOrderServer", resourceRoot, function(requestingPlayer
             return
         end
     end
-    -- generate orderID
-    local orderID = tostring(os.time()) .. tostring(math.random(100,999))
+    -- generate unique orderID
+    local orderID
+    repeat
+        orderID = tostring(os.time()) .. tostring(math.random(100,999))
+        local exists = false
+        for _, o in ipairs(shop.orderList or {}) do
+            if tostring(o.orderID) == orderID then exists = true; break end
+        end
+    until not exists
+
     local order = {
         orderID = orderID,
         items = orderData.items or {},
@@ -492,7 +633,16 @@ addEventHandler("createFuelOrderServer", resourceRoot, function(requestingPlayer
         createdBy = getPlayerCharID(src)
     }
     table.insert(shop.orderList, order)
-    saveShopToDB(shopID)
+    local ok = saveShopToDB(shopID)
+    if not ok then
+        -- refund if needed and remove order
+        table.remove(shop.orderList)
+        if charged then
+            if useBank then givePlayerBank(src, total) else givePlayerCash(src, total) end
+        end
+        triggerClientEvent(src, "createFuelOrderResult", resourceRoot, false, "Szerverhiba: nem sikerült rögzíteni a rendelést. Visszatérítettük a pénzt.")
+        return
+    end
     triggerClientEvent(src, "createFuelOrderResult", resourceRoot, true, orderID)
     outputDebugString("[ex_fuel_bussiness] New order "..orderID.." for shop "..tostring(shopID))
 end)

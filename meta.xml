@@ -1,0 +1,25 @@
+<meta>
+    <info author="WonderMTA" name="Fuel Business System" version="1.0" type="script" description="Fuel station business system (client + server)." />
+
+    <!-- SERVER -->
+    <script src="server.lua" type="server" />
+
+    <!-- CLIENT -->
+    <script src="_imports/dx/_imports.lua" type="client" />
+    <script src="_imports/new_core/shared/imports/__imports__client.lua" type="client" />
+    <script src="_imports/new_core/client/imports/DX/__imports.lua" type="client" />
+    <script src="_imports/protect/protect__client.lua" type="client" />
+
+    <script src="assetC.lua" type="client" />
+    <script src="managementC.lua" type="client" />
+    <script src="shopC.lua" type="client" />
+    <script src="sourceG__client.lua" type="client" />
+    <script src="worldTextC.lua" type="client" />
+
+    <!-- DEPENDENCIES -->
+    <include resource="sCore" />
+
+    <!-- EXPORTS -->
+    <export function="getFuelBusinessData" type="server" />
+    <export function="updateFuelBusinessData" type="server" />
+</meta>
